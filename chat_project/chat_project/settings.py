@@ -108,6 +108,10 @@ USE_TZ = True
 # STATIC FILES
 STATIC_URL = 'static/'
 
+# MEDIA FILES (for chat attachments)
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 # DEFAULT PRIMARY KEY FIELD
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

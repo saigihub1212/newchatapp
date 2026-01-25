@@ -1,14 +1,11 @@
-from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.decorators import api_view, authentication_classes, permission_classes, parser_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.parsers import MultiPartParser, FormParser
 from django.shortcuts import get_object_or_404
-from django.contrib.auth.hashers import check_password
-from datetime import datetime, timedelta
-import jwt
-
-from .models import *
-from .serializers import RegisterSerializer
+from .models import DirectChat, GroupChat, GroupMember, Message, MyUser
+from . import services
 from chat_project.decoraters import login_required
 
 
@@ -20,20 +17,20 @@ from chat_project.decoraters import login_required
 @authentication_classes([])
 @permission_classes([AllowAny])
 def login(request):
-    data = request.data  
+    data = request.data
 
-    user = MyUser.objects.filter(username=data.get("username")).first()
-    if not user:
-        return Response({"error": "user not found go to register"}, status=404)
-
-    if not check_password(data.get("password"), user.password):
-        return Response({"error": "wrong password"}, status=400)
-
-    token = jwt.encode(
-        {"id": user.id, "exp": datetime.utcnow() + timedelta(hours=24)},
-        "keys",
-        algorithm="HS256"
-    )
+    try:
+        token, _ = services.login_user(
+            username=data.get("username"),
+            password=data.get("password"),
+        )
+    except ValueError as exc:
+        code = str(exc)
+        if code == "user_not_found":
+            return Response({"error": "user not found go to register"}, status=404)
+        if code == "wrong_password":
+            return Response({"error": "wrong password"}, status=400)
+        return Response({"error": "invalid credentials"}, status=400)
 
     return Response({"token": token}, status=200)
 
@@ -41,22 +38,12 @@ def login(request):
 @api_view(["POST"])
 @authentication_classes([])
 @permission_classes([AllowAny])
-def register(request):
-    serializer = RegisterSerializer(data=request.data)
+def signup(request):
+    ok, payload = services.register_user(request.data)
+    if ok:
+        return Response(payload, status=201)
+    return Response(payload, status=400)
 
-    if serializer.is_valid():
-        serializer.save()
-        return Response({"message": "User registered successfully"}, status=201)
-
-    return Response(serializer.errors, status=400)
-
-
-@api_view(["GET"])
-@authentication_classes([])
-@permission_classes([AllowAny])
-@login_required
-def welcome(request):
-    return Response({"message": "welcome"}, status=200)
 
 
 # =====================================================
@@ -85,36 +72,51 @@ def start_direct_chat(request):
     if not user1_id or not user2_id:
         return Response({"error": "user1 and user2 required"}, status=400)
 
-    user1 = MyUser.objects.get(id=user1_id)
-    user2 = MyUser.objects.get(id=user2_id)
-
-    chat = get_or_create_direct_chat(user1, user2)
-
-    messages = Message.objects.filter(direct_chat=chat).order_by("created_at")
+    try:
+        chat, messages = services.start_direct_chat_service(int(user1_id), int(user2_id))
+    except ValueError as exc:
+        if str(exc) == "user_not_found":
+            return Response({"error": "user not found"}, status=404)
+        raise
 
     data = []
     for m in messages:
-        data.append({
-            "id": m.id,
-            "sender_id": m.sender.id,
-            "sender": m.sender.username,
-            "text": m.text,
-            "created_at": m.created_at,
-        })
+        file_field = m.get("file")
+        data.append(
+            {
+                "id": m["id"],
+                "sender_id": m["sender_id"],
+                "sender": m["sender"],
+                "text": m["text"],
+                "file_url": request.build_absolute_uri(file_field.url) if file_field else None,
+                "created_at": m["created_at"],
+            }
+        )
 
-    return Response({
-        "chat_id": chat.id,
-        "messages": data
-    })
+    return Response({"chat_id": chat.id, "messages": data})
 
+# LIST MY GROUPS
+
+@api_view(["GET"])
+
+@authentication_classes([])
+@permission_classes([AllowAny])
+@login_required
+def my_groups(request):
+
+    user = request.user
+
+    data = services.my_groups_service(user)
+
+    return Response(data)
 
 @api_view(["GET"])
 @authentication_classes([])
 @permission_classes([AllowAny])
 @login_required
 def get_users(request):
-    users = MyUser.objects.all().values("id", "username")
-    return Response({"users": list(users)}, status=200)
+    users = services.list_users()
+    return Response({"users": users}, status=200)
 
 
 # =====================================================
@@ -134,15 +136,7 @@ def create_group(request):
 
     if not name:
         return Response({"error": "Group name required"}, status=400)
-
-    group = GroupChat.objects.create(name=name)
-
-    # add creator as admin
-    GroupMember.objects.create(
-        group_chat=group,
-        user=user,
-        role="admin"
-    )
+    group = services.create_group_service(user, name)
 
     return Response({
         "message": "Group created successfully",
@@ -169,31 +163,14 @@ def add_user_to_group(request, group_id):
 
     group = get_object_or_404(GroupChat, id=group_id)
 
-    # check admin
-    is_admin = GroupMember.objects.filter(
-        group_chat=group,
-        user=admin,
-        role="admin"
-    ).exists()
+    ok, msg = services.add_user_to_group_service(admin, group, user_id)
+    if not ok:
+        status_code = 403 if msg in ("Only admins can add users", "Not allowed") else 400
+        if msg == "User not found":
+            status_code = 404
+        return Response({"error": msg}, status=status_code)
 
-    if not is_admin:
-        return Response({"error": "Only admins can add users"}, status=403)
-
-    try:
-        new_user = MyUser.objects.get(id=user_id)
-    except MyUser.DoesNotExist:
-        return Response({"error": "User not found"}, status=404)
-
-    member, created = GroupMember.objects.get_or_create(
-        group_chat=group,
-        user=new_user,
-        defaults={"role": "member"}
-    )
-
-    if not created:
-        return Response({"error": "User already in group"}, status=400)
-
-    return Response({"message": "User added successfully"}, status=201)
+    return Response({"message": msg}, status=201)
 
 
 
@@ -206,41 +183,37 @@ def group_members(request, group_id):
     user = request.user
     group = get_object_or_404(GroupChat, id=group_id)
 
-    is_member = GroupMember.objects.filter(
-        group_chat=group,
-        user=user
-    ).exists()
+    ok, result = services.group_members_service(user, group)
+    if not ok:
+        return Response({"error": result}, status=403)
 
-    if not is_member:
-        return Response({"error": "Not allowed"}, status=403)
-
-    members = GroupMember.objects.filter(group_chat=group).select_related("user")
-
-    data = [
-        {
-            "id": m.user.id,
-            "username": m.user.username,
-            "role": m.role
-        }
-        for m in members
-    ]
-
-    return Response(data)
+    return Response(result, status=200)
 
 
-# LIST MY GROUPS
+# =====================================================
+# 🔥 PROFILE PHOTO
+# =====================================================
 
-@api_view(["GET"])
-
+@api_view(["POST"])
 @authentication_classes([])
 @permission_classes([AllowAny])
 @login_required
-def my_groups(request):
+@parser_classes([MultiPartParser, FormParser])
+def update_profile_photo(request):
 
     user = request.user
+    file = request.FILES.get("profile_pic")
 
-    groups = GroupChat.objects.filter(members__user=user)
+    if not file:
+        return Response({"error": "profile_pic file required"}, status=400)
 
-    data = [{"id": g.id, "name": g.name} for g in groups]
+    user.profile_pic = file
+    user.save()
 
-    return Response(data)
+    url = request.build_absolute_uri(user.profile_pic.url) if user.profile_pic else None
+
+    return Response({
+        "message": "Profile photo updated successfully",
+        "profile_pic_url": url,
+    }, status=200)
+

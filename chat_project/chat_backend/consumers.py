@@ -1,13 +1,25 @@
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
-from .models import DirectChat, GroupChat, Message, MyUser
 
+from .models import DirectChat, GroupChat, MyUser
+from . import services
 
 
 class ChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
-        self.room_name = None   # 🔥 IMPORTANT: always define first
+        # always predefine attributes so disconnect() is safe
+        print(self.scope["user"])
+        self.room_name = None
+        self.chat_type = None
+        self.direct_chat_id = None
+        self.group_id = None
+
+        # User is set by JWTAuthMiddleware; require authentication
+        self.user = self.scope.get("user")
+        if not self.user:
+            await self.close()
+            return
 
         url_kwargs = self.scope["url_route"]["kwargs"]
 
@@ -30,17 +42,26 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.accept()
 
     async def disconnect(self, close_code):
-        # 🔥 ONLY DISCARD IF room_name EXISTS
-        if self.room_name:
+        # Only discard if we successfully joined a room
+        if getattr(self, "room_name", None):
             await self.channel_layer.group_discard(self.room_name, self.channel_name)
 
     async def receive(self, text_data):
         data = json.loads(text_data)
 
-        sender_id = data["sender_id"]   # ⚠️ insecure, we’ll fix later
-        text = data["text"]
+        # sender is always the authenticated WebSocket user
+        if not self.user:
+            await self.close()
+            return
 
-        message = await self.create_message(sender_id, text)
+        sender_id = self.user.id
+        text = data.get("text", "")
+        try:
+            message = await self.create_message(sender_id, text)
+        except PermissionError:
+            # User is not allowed to post in this chat; close gracefully
+            await self.close()
+            return
 
         await self.channel_layer.group_send(
             self.room_name,
@@ -64,15 +85,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         if self.chat_type == "direct":
             chat = DirectChat.objects.get(id=self.direct_chat_id)
-            return Message.objects.create(
-                direct_chat=chat,
-                sender=sender,
-                text=text,
-            )
+            return services.send_direct_message_service(sender, chat, text, None)
         else:
             group = GroupChat.objects.get(id=self.group_id)
-            return Message.objects.create(
-                group_chat=group,
-                sender=sender,
-                text=text,
-            )
+            return services.send_group_message_service(sender, group, text, None)
