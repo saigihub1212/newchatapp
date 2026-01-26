@@ -54,10 +54,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.close()
             return
 
-        sender_id = self.user.id
         text = data.get("text", "")
         try:
-            message = await self.create_message(sender_id, text)
+            message = await self.create_message(self.user.id, text)
         except PermissionError:
             # User is not allowed to post in this chat; close gracefully
             await self.close()
@@ -68,7 +67,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
             {
                 "type": "chat.message",
                 "id": message.id,
-                "sender_id": sender_id,
                 "text": message.text,
                 "created_at": message.created_at.isoformat(),
             }

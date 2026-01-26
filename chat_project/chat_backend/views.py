@@ -8,7 +8,6 @@ from .models import DirectChat, GroupChat, GroupMember, Message, MyUser
 from . import services
 from chat_project.decoraters import login_required
 
-
 # =====================================================
 # 🔥 AUTH
 # =====================================================
@@ -66,11 +65,13 @@ def get_or_create_direct_chat(user1, user2):
 @permission_classes([AllowAny])
 @login_required
 def start_direct_chat(request):
-    user1_id = request.data.get("user1")
-    user2_id = request.data.get("user2")
+    # Authenticated user is always one side of the chat
+    user1_id = request.user.id
+    # Body contains only the other user's ID (must exist in users table)
+    user2_id = request.data.get("user_id")
 
-    if not user1_id or not user2_id:
-        return Response({"error": "user1 and user2 required"}, status=400)
+    if not user2_id:
+        return Response({"error": "user_id required"}, status=400)
 
     try:
         chat, messages = services.start_direct_chat_service(int(user1_id), int(user2_id))
@@ -93,7 +94,12 @@ def start_direct_chat(request):
             }
         )
 
-    return Response({"chat_id": chat.id, "messages": data})
+    return Response({
+        "chat_id": chat.id,
+        "room_name": f"direct_{chat.id}",
+        "receiver_id": int(user2_id),
+        "messages": data,
+    })
 
 # LIST MY GROUPS
 
