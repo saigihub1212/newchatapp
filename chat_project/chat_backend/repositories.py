@@ -49,8 +49,12 @@ def list_messages_for_direct_chat(chat: DirectChat) -> QuerySet:
 # =========================
 
 
-def create_group(name: str) -> GroupChat:
-    return GroupChat.objects.create(name=name)
+def create_group(name: str) -> Tuple[GroupChat, bool]:
+    """Create a group by name if it does not exist, or return the existing one.
+
+    Returns (group, created).
+    """
+    return GroupChat.objects.get_or_create(name=name)
 
 
 def get_group_by_id(group_id: int) -> GroupChat:
@@ -102,3 +106,7 @@ def create_group_message(group: GroupChat, sender: MyUser, text: str = "", file=
         text=text,
         file=file,
     )
+
+
+def list_messages_for_group_chat(group: GroupChat) -> QuerySet:
+    return Message.objects.filter(group_chat=group).select_related("sender").order_by("created_at")

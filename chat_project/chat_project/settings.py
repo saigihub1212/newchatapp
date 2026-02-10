@@ -3,14 +3,21 @@ Django settings for chat_project project.
 """
 
 from pathlib import Path
+import os
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY
-SECRET_KEY = 'django-insecure-g)fmle)p=x)6%z0gqx)*1@5ij%(*u5*^&%*d4g+(cm3c-d%z7w'
+# In production, override this via environment variable DJANGO_SECRET_KEY
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "change-this-in-production-very-secret-key")
+
 DEBUG = True
 
-ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
+ALLOWED_HOSTS = ["localhost", "127.0.0.1", "13.50.236.152"]
+
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
 
 # APPLICATIONS
 INSTALLED_APPS = [
@@ -24,6 +31,9 @@ INSTALLED_APPS = [
     # WebSockets
     'channels',
 
+    # CORS
+    'corsheaders',
+
     # Local app
     'chat_backend',
 
@@ -35,6 +45,10 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+
+    # CORS (must be high, before CommonMiddleware)
+    'corsheaders.middleware.CorsMiddleware',
+
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
 
@@ -114,6 +128,10 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 # DEFAULT PRIMARY KEY FIELD
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# CORS
+# For development, allow all origins. Change to explicit list in production.
+CORS_ALLOW_ALL_ORIGINS = True
 
 # 🔥🔥🔥 VERY IMPORTANT FIX 🔥🔥🔥
 # Disable Django + DRF authentication completely

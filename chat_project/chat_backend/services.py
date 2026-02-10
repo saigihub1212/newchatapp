@@ -3,6 +3,8 @@ from typing import Dict, List, Tuple
 import jwt
 from datetime import datetime, timedelta
 from django.contrib.auth.hashers import check_password
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 
 from .models import MyUser, DirectChat, GroupChat, GroupMember, Message
 from .serializers import RegisterSerializer
@@ -89,9 +91,33 @@ def my_groups_service(user: MyUser) -> List[Dict]:
     groups = repo.list_groups_for_user(user)
     data = [{"id": g.id, "name": g.name} for g in groups]
     return data
+
+
+def list_group_messages_service(user: MyUser, group: GroupChat) -> Tuple[bool, List[Dict] | str]:
+    """Return (ok, data_or_error). Only members (including admins) can view messages."""
+    if not repo.is_group_member(group, user):
+        return False, "Not allowed"
+
+    messages_qs = repo.list_messages_for_group_chat(group)
+    data: List[Dict] = []
+    for m in messages_qs:
+        data.append(
+            {
+                "id": m.id,
+                "sender_id": m.sender.id,
+                "sender": m.sender.username,
+                "text": m.text,
+                "file": m.file,  # caller builds absolute URL if needed
+                "created_at": m.created_at,
+            }
+        )
+
+    return True, data
+
+
 def create_group_service(creator: MyUser, name: str) -> GroupChat:
-    group = repo.create_group(name)
-    # add creator as admin
+    group, created = repo.create_group(name)
+    # add creator as admin (idempotent; unique_together on GroupMember prevents duplicates)
     repo.add_group_member(group, creator, role="admin")
     return group
 
@@ -110,7 +136,68 @@ def add_user_to_group_service(admin: MyUser, group: GroupChat, user_id: int) -> 
     if not created:
         return False, "User already in group"
 
+    # Notify the added user via WebSocket (if connected)
+    channel_layer = get_channel_layer()
+    if channel_layer is not None:
+        async_to_sync(channel_layer.group_send)(
+            f"user_{new_user.id}",
+            {
+            "group_id": group.id,
+                "group_name": group.name,
+                "added_by_id": admin.id,
+                "added_by_username": admin.username,
+            },
+        )
+
     return True, "User added successfully"
+
+
+def add_users_to_group_service(admin: MyUser, group: GroupChat, user_ids: List[int]) -> Tuple[bool, List[Dict] | str]:
+    """Add multiple users to a group.
+
+    Returns (ok, details_or_error).
+    """
+    if not repo.is_group_admin(group, admin):
+        return False, "Only admins can add users"
+
+    channel_layer = get_channel_layer()
+    results: List[Dict] = []
+
+    for raw_id in user_ids:
+        try:
+            uid = int(raw_id)
+        except (TypeError, ValueError):
+            results.append({"user_id": raw_id, "status": "invalid_id"})
+            continue
+
+        try:
+            new_user = repo.get_user_by_id(uid)
+        except MyUser.DoesNotExist:
+            results.append({"user_id": uid, "status": "not_found"})
+            continue
+
+        member, created = repo.add_group_member(group, new_user)
+        if not created:
+            results.append({"user_id": uid, "status": "already_in_group"})
+            continue
+
+        # send notification per successfully added user
+        if channel_layer is not None:
+            async_to_sync(channel_layer.group_send)(
+                f"user_{new_user.id}",
+                {
+                    "type": "group.added",
+                    "event": "group_added",
+                    "group_id": group.id,
+                    "group_name": group.name,
+                    "added_by_id": admin.id,
+                    "added_by_username": admin.username,
+                },
+            )
+
+        results.append({"user_id": uid, "status": "added"})
+
+    return True, results
 
 
 def group_members_service(user: MyUser, group: GroupChat) -> Tuple[bool, List[Dict] | str]:

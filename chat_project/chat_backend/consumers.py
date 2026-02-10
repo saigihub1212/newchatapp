@@ -67,6 +67,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             {
                 "type": "chat.message",
                 "id": message.id,
+                "sender_id": self.user.id,
+                "sender": self.user.username,
                 "text": message.text,
                 "created_at": message.created_at.isoformat(),
             }
@@ -87,3 +89,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
         else:
             group = GroupChat.objects.get(id=self.group_id)
             return services.send_group_message_service(sender, group, text, None)
+
+
+class NotificationConsumer(AsyncWebsocketConsumer):
+    async def connect(self):
+        # each connected user joins their personal notification group
+        self.user = self.scope.get("user")
+        if not self.user:
+            await self.close()
+            return
+
+        self.room_name = f"user_{self.user.id}"
+        await self.channel_layer.group_add(self.room_name, self.channel_name)
+        await self.accept()
+
+    async def disconnect(self, close_code):
+        if getattr(self, "room_name", None):
+            await self.channel_layer.group_discard(self.room_name, self.channel_name)
+
+    async def group_added(self, event):
+        # push notification about being added to a group
+        await self.send(text_data=json.dumps(event))
+

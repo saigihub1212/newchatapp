@@ -101,10 +101,9 @@ def start_direct_chat(request):
         "messages": data,
     })
 
-# LIST MY GROUPS
+# LIST MY GROUPS (OLD)
 
 @api_view(["GET"])
-
 @authentication_classes([])
 @permission_classes([AllowAny])
 @login_required
@@ -116,13 +115,88 @@ def my_groups(request):
 
     return Response(data)
 
+
+# LIST MY GROUPS (NEW, EXPLICITLY JWT-ONLY)
+
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+@login_required
+def user_groups_from_token(request):
+    """Return all groups for the authenticated user, using only JWT (no body params)."""
+
+    user = request.user  # set by JWT in Authorization header
+    groups = services.my_groups_service(user)
+
+    return Response(
+        {
+            "user_id": user.id,
+            "username": user.username,
+            "groups": groups,
+        },
+        status=200,
+    )
+
+
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+@login_required
+def group_chat_messages(request, group_id):
+    """Return messages for a specific group chat if the requester is a member."""
+
+    user = request.user
+    group = get_object_or_404(GroupChat, id=group_id)
+
+    ok, result = services.list_group_messages_service(user, group)
+    if not ok:
+        return Response({"error": result}, status=403)
+
+    messages = []
+    for m in result:
+        file_field = m.get("file")
+        messages.append(
+            {
+                "id": m["id"],
+                "sender_id": m["sender_id"],
+                "sender": m["sender"],
+                "text": m["text"],
+                "file_url": request.build_absolute_uri(file_field.url) if file_field else None,
+                "created_at": m["created_at"],
+            }
+        )
+
+    return Response(
+        {
+            "group_id": group.id,
+            "group_name": group.name,
+            "messages": messages,
+        },
+        status=200,
+    )
+
 @api_view(["GET"])
 @authentication_classes([])
 @permission_classes([AllowAny])
 @login_required
 def get_users(request):
-    users = services.list_users()
-    return Response({"users": users}, status=200)
+    users = MyUser.objects.all()
+    data = []
+    for u in users:
+        profile_pic_url = (
+            request.build_absolute_uri(u.profile_pic.url)
+            if u.profile_pic
+            else None
+        )
+        data.append(
+            {
+                "id": u.id,
+                "username": u.username,
+                "profile_pic_url": profile_pic_url,
+            }
+        )
+
+    return Response({"users": data}, status=200)
 
 
 # =====================================================
@@ -162,12 +236,26 @@ def create_group(request):
 def add_user_to_group(request, group_id):
 
     admin = request.user
+    user_ids = request.data.get("user_ids")
     user_id = request.data.get("user_id")
 
-    if not user_id:
-        return Response({"error": "user_id required"}, status=400)
-
     group = get_object_or_404(GroupChat, id=group_id)
+
+    # multiple users: expect a list in user_ids
+    if user_ids is not None:
+        if not isinstance(user_ids, list):
+            return Response({"error": "user_ids must be a list"}, status=400)
+
+        ok, result = services.add_users_to_group_service(admin, group, user_ids)
+        if not ok:
+            status_code = 403 if result in ("Only admins can add users", "Not allowed") else 400
+            return Response({"error": result}, status=status_code)
+
+        return Response({"results": result}, status=201)
+
+    # single user fallback (backwards compatible)
+    if not user_id:
+        return Response({"error": "user_id or user_ids required"}, status=400)
 
     ok, msg = services.add_user_to_group_service(admin, group, user_id)
     if not ok:
@@ -223,3 +311,37 @@ def update_profile_photo(request):
         "profile_pic_url": url,
     }, status=200)
 
+
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+@login_required
+def get_profile(request):
+
+    user = request.user
+
+    profile_pic_url = (
+        request.build_absolute_uri(user.profile_pic.url)
+        if user.profile_pic
+        else None
+    )
+
+    return Response(
+        {
+            "id": user.id,
+            "username": user.username,
+            "age": user.age,
+            "gender": user.gender,
+            "profile_pic_url": profile_pic_url,
+        },
+        status=200,
+    )
+
+
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def test(request):
+    objec = MyUser.objects.all()
+    print(objec)
+    return Response({"message": objec}, status=200)
