@@ -95,6 +95,7 @@ class NotificationConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         # each connected user joins their personal notification group
         self.user = self.scope.get("user")
+        print(f"NotificationConsumer.connect user={getattr(self.user, 'id', None)}")
         if not self.user:
             await self.close()
             return
@@ -103,11 +104,26 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_add(self.room_name, self.channel_name)
         await self.accept()
 
+        # acknowledge connection for easier debugging
+        try:
+            await self.send(text_data=json.dumps({"event": "notifications_connected", "user_id": self.user.id}))
+        except Exception:
+            pass
+
     async def disconnect(self, close_code):
         if getattr(self, "room_name", None):
             await self.channel_layer.group_discard(self.room_name, self.channel_name)
 
     async def group_added(self, event):
         # push notification about being added to a group
+        print(f"NotificationConsumer.group_added -> user={getattr(self.user,'id',None)} event={event}")
+        await self.send(text_data=json.dumps(event))
+
+    async def message_received(self, event):
+        """Push a lightweight notification when this user receives a direct message.
+
+        Called via channel_layer.group_send with type='message.received'.
+        """
+        print(f"NotificationConsumer.message_received -> user={getattr(self.user,'id',None)} event={event.get('event')}")
         await self.send(text_data=json.dumps(event))
 

@@ -227,7 +227,33 @@ def send_direct_message_service(user: MyUser, chat: DirectChat, text: str, file)
     if user.id not in (chat.user1_id, chat.user2_id):
         raise PermissionError("not_allowed")
 
-    return repo.create_direct_message(chat, user, text=text, file=file)
+    # create the message in DB
+    message = repo.create_direct_message(chat, user, text=text, file=file)
+
+    # Notify the other participant via the user's notification group (if connected)
+    try:
+        other_user_id = chat.user2_id if user.id == chat.user1_id else chat.user1_id
+    except Exception:
+        other_user_id = None
+
+    channel_layer = get_channel_layer()
+    if channel_layer is not None and other_user_id is not None:
+        async_to_sync(channel_layer.group_send)(
+            f"user_{other_user_id}",
+            {
+                "type": "message.received",
+                "event": "message_received",
+                "chat_type": "direct",
+                "chat_id": chat.id,
+                "message_id": message.id,
+                "sender_id": user.id,
+                "sender": user.username,
+                "text": message.text,
+                "created_at": message.created_at.isoformat(),
+            },
+        )
+
+    return message
 
 
 def send_group_message_service(user: MyUser, group: GroupChat, text: str, file) -> Message:

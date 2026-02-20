@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import './App.css';
 import {
   login as loginApi,
@@ -33,9 +33,46 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [connecting, setConnecting] = useState(false);
   const [ws, setWs] = useState(null);
+  const [notifWs, setNotifWs] = useState(null);
+  const [toasts, setToasts] = useState([]);
+  const [unreadCounts, setUnreadCounts] = useState({}); // keys: 'user_<id>' or 'group_<id>'
 
   const [composerText, setComposerText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+
+  const incrUnread = (key) => setUnreadCounts((prev) => ({ ...prev, [key]: (prev[key] || 0) + 1 }));
+  const clearUnreadKey = (key) => setUnreadCounts((prev) => { const p = { ...prev }; delete p[key]; return p; });
+
+  const showToast = useCallback((payload) => {
+    const id = `toast_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+    const toast = { id, ...payload };
+    setToasts((prev) => [...prev, toast]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 4000);
+  }, []);
+
+  const clearToast = (id) => setToasts((prev) => prev.filter((t) => t.id !== id));
+
+  const openFromToast = async (userId, toastId, chatId) => {
+    clearToast(toastId);
+    // try to find user object in memory
+    const user = users.find((u) => Number(u.id) === Number(userId));
+    if (user) {
+      await openDirectChat(user);
+      return;
+    }
+
+    // fallback: ask server to start a direct chat and open it
+    try {
+      const data = await startDirectChat(userId);
+      setActiveChat({ type: 'direct', id: data.chat_id, name: data.username || '' });
+      setMessages(data.messages || []);
+      connectWebSocket('direct', data.chat_id);
+    } catch (err) {
+      console.error('Failed to open chat from toast', err);
+    }
+  }; 
 
   // Profile / settings view
   const [showProfile, setShowProfile] = useState(false);
@@ -107,6 +144,10 @@ function App() {
     if (ws) {
       ws.close();
       setWs(null);
+    }
+    if (notifWs) {
+      notifWs.close();
+      setNotifWs(null);
     }
     setShowProfile(false);
   };
@@ -288,6 +329,84 @@ function App() {
     fetchData();
   }, [isAuthenticated]);
 
+  // Notifications WebSocket — keep a lightweight connection for user-level events
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    // request native Notification permission once (graceful)
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      try { Notification.requestPermission(); } catch (e) { /* ignore */ }
+    }
+
+    const url = `${WS_BASE}/ws/notifications/?token=${token}`;
+    const socket = new WebSocket(url);
+
+    socket.onopen = () => {
+      console.debug('Notifications WS connected', url);
+    };
+
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.debug('Notifications WS message', data);
+
+        // someone added you to a group
+        if (data.event === 'group_added' || data.type === 'group.added') {
+          setGroups((prev) => {
+            if (prev.some((g) => g.id === data.group_id)) return prev;
+            return [...prev, { id: data.group_id, name: data.group_name }];
+          });
+          setRecentChats((prev) => ({ ...prev, [`group_${data.group_id}`]: Date.now() }));
+          showToast({ title: 'Added to group', body: data.group_name || 'New group', chatId: data.group_id });
+          return;
+        }
+
+        // incoming direct message notification — bump recent-activity for sender
+        if (data.event === 'message_received' || data.type === 'message.received') {
+          const senderId = data.sender_id != null ? Number(data.sender_id) : null;
+          setRecentChats((prev) => ({ ...prev, [`user_${senderId}`]: Date.now() }));
+
+          // if recipient is NOT viewing that chat, increment unread counter
+          if (!(activeChat?.type === 'direct' && Number(activeChat?.id) === Number(data.chat_id))) {
+            if (senderId != null) {
+              setUnreadCounts((prev) => ({ ...prev, [`user_${senderId}`]: (prev[`user_${senderId}`] || 0) + 1 }));
+            }
+          }
+
+          // don't show popup if user is currently viewing that direct chat
+          if (activeChat?.type === 'direct' && Number(activeChat?.id) === Number(data.chat_id)) {
+            return;
+          }
+
+          // show in-app toast
+          showToast({ title: data.sender || 'New message', body: data.text || '', userId: senderId, chatId: data.chat_id });
+
+          // native browser notification
+          if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            try {
+              const n = new Notification(data.sender || 'New message', { body: data.text || '' });
+              n.onclick = () => { window.focus(); };
+            } catch (e) { /* ignore */ }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to parse notifications WS message', err);
+      }
+    };
+
+    socket.onclose = () => {
+      console.debug('Notifications WS closed');
+      setNotifWs(null);
+    };
+
+    setNotifWs(socket);
+
+    return () => {
+      socket.close();
+      setNotifWs(null);
+    };
+  }, [isAuthenticated, token, activeChat, showToast]); 
+
   // CHAT SELECTION & MESSAGE LOADING --------------------------
   const resetChatState = () => {
     setMessages([]);
@@ -309,6 +428,8 @@ function App() {
       const data = await startDirectChat(user.id);
       setActiveChat({ type: 'direct', id: data.chat_id, name: user.username, raw: user });
       setMessages(data.messages || []);
+      // clear unread for this user/chat
+      setUnreadCounts((prev) => { const p = { ...prev }; delete p[`user_${user.id}`]; return p; });
       connectWebSocket('direct', data.chat_id);
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -328,6 +449,8 @@ function App() {
     try {
       const data = await getGroupMessages(group.id);
       setMessages(data.messages || []);
+      // clear unread for this group/chat
+      setUnreadCounts((prev) => { const p = { ...prev }; delete p[`group_${group.id}`]; return p; });
       connectWebSocket('group', group.id);
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -354,6 +477,13 @@ function App() {
         if (data.type === 'chat.message' || data.text) {
           const incomingSenderId = data.sender_id != null ? Number(data.sender_id) : null;
           const myId = currentUserRef.current?.id != null ? Number(currentUserRef.current.id) : null;
+
+          // clear unread for this chat because user is viewing it
+          if (type === 'direct' && incomingSenderId != null) {
+            setUnreadCounts((prev) => { const p = { ...prev }; delete p[`user_${incomingSenderId}`]; return p; });
+          } else if (type === 'group') {
+            setUnreadCounts((prev) => { const p = { ...prev }; delete p[`group_${id}`]; return p; });
+          }
 
           setMessages((prev) => {
             // Check if we have an optimistic message with same text (for dedup)
@@ -612,6 +742,15 @@ function App() {
 
   return (
     <div className="app-root">
+      {/* Toasts (in-app popups) */}
+      <div className="toast-container" aria-live="polite">
+        {toasts.map((t) => (
+          <div key={t.id} className="toast" role="status" onClick={() => openFromToast(t.userId, t.id, t.chatId)}>
+            <div className="toast-title">{t.title}</div>
+            {t.body && <div className="toast-body">{t.body}</div>}
+          </div>
+        ))}
+      </div>
       <div
         className={
           `chat-shell${!activeChat ? ' chat-shell--mobile-list-only' : ''}`
@@ -706,6 +845,9 @@ function App() {
                     <div className="sidebar-item-body">
                       <div className="sidebar-item-row">
                         <span className="sidebar-item-name">{u.username}</span>
+                        {unreadCounts[`user_${u.id}`] > 0 && (
+                          <div className="sidebar-unread-badge">{unreadCounts[`user_${u.id}`]}</div>
+                        )}
                         <span className="sidebar-item-status online" />
                       </div>
                     </div>
@@ -744,6 +886,9 @@ function App() {
                     <div className="sidebar-item-body">
                       <div className="sidebar-item-row">
                         <span className="sidebar-item-name">{g.name}</span>
+                        {unreadCounts[`group_${g.id}`] > 0 && (
+                          <div className="sidebar-unread-badge">{unreadCounts[`group_${g.id}`]}</div>
+                        )}
                       </div>
                     </div>
                   </button>

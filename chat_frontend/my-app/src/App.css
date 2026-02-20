@@ -500,6 +500,18 @@
   text-overflow: ellipsis;
 }
 
+.sidebar-unread-badge {
+  background: linear-gradient(90deg, #f5576c 0%, #fda085 100%);
+  color: #1a1a2e;
+  font-weight: 700;
+  font-size: 0.75rem;
+  padding: 0.18rem 0.55rem;
+  border-radius: 999px;
+  margin-left: 0.5rem;
+  min-width: 22px;
+  text-align: center;
+  box-shadow: 0 4px 12px rgba(2,6,23,0.45);
+}
 .sidebar-item-status.online {
   width: 0;
   height: 0;
@@ -1169,4 +1181,38 @@
   color: #fda085;
   margin-top: 10px;
   text-align: right;
+}
+
+/* Toast / in-app notification styles */
+.toast-container {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  z-index: 1200;
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  background: rgba(20,20,35,0.95);
+  color: #e9edef;
+  border-radius: 12px;
+  padding: 0.65rem 0.9rem;
+  min-width: 220px;
+  box-shadow: 0 8px 30px rgba(2,6,23,0.6);
+  border: 1px solid rgba(253,160,133,0.12);
+  cursor: pointer;
+  animation: fadeInUp 220ms cubic-bezier(.2,.8,.2,1);
+}
+.toast-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+  margin-bottom: 0.25rem;
+}
+.toast-body {
+  font-size: 0.85rem;
+  color: rgba(233,237,239,0.85);
+  line-height: 1.2;
 }
